@@ -1,0 +1,17 @@
+{
+  "name": "daily-market-report",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Daily Market Report — automated CSV generation and email delivery.",
+  "scripts": {
+    "generate:report": "node scripts/generate-report.js",
+    "send:email": "node scripts/send-email.js",
+    "daily-report": "npm run generate:report && npm run send:email"
+  },
+  "dependencies": {
+    "nodemailer": "^8.0.7"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,96 @@
+name: Daily Market Report Email
+
+# Sends the Daily Market Report CSV by email at 6:00 PM America/New_York
+# on business days (Mon-Fri). GitHub Actions cron runs in UTC, so we list
+# both DST and standard-time schedules and gate execution at runtime so
+# only one fires per day.
+on:
+  workflow_dispatch:
+  schedule:
+    # 22:00 UTC = 18:00 America/New_York during Eastern Daylight Time (EDT, UTC-4)
+    - cron: '0 22 * * 1-5'
+    # 23:00 UTC = 18:00 America/New_York during Eastern Standard Time (EST, UTC-5)
+    - cron: '0 23 * * 1-5'
+
+concurrency:
+  group: daily-market-report-email
+  cancel-in-progress: false
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: America/New_York
+    steps:
+      - name: Guard - only run at 18:00 New York on business days
+        # Skipped for manual workflow_dispatch runs so maintainers can test.
+        if: github.event_name == 'schedule'
+        run: |
+          set -euo pipefail
+          local_dow=$(date +%u)   # 1=Mon ... 7=Sun
+          local_hm=$(date +%H:%M)
+          local_full=$(date -Iseconds)
+          echo "Local time (America/New_York): ${local_full}"
+          echo "Day-of-week=${local_dow} Hour:Minute=${local_hm}"
+          if [ "${local_dow}" -ge 6 ]; then
+            echo "Not a business day in New York — exiting."
+            exit 0
+          fi
+          if [ "${local_hm}" != "18:00" ]; then
+            echo "Not 18:00 in New York (got ${local_hm}) — this cron is the off-season schedule, exiting."
+            exit 0
+          fi
+          echo "Guard passed — proceeding."
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Generate report
+        id: report
+        run: |
+          set -euo pipefail
+          report_path=$(npm run --silent generate:report | tail -n 1)
+          echo "report_path=${report_path}" >> "$GITHUB_OUTPUT"
+          report_date=$(date +%Y-%m-%d)
+          echo "report_date=${report_date}" >> "$GITHUB_OUTPUT"
+          test -s "${report_path}"
+
+      - name: Send email
+        env:
+          # --- Gmail SMTP (defaults shown; do NOT echo secrets) -----------------
+          # STARTTLS on port 587 (default):
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: '587'
+          SMTP_SECURE: 'false'
+          SMTP_REQUIRE_TLS: 'true'
+          # Alternative — implicit TLS on port 465:
+          #   SMTP_PORT: '465'
+          #   SMTP_SECURE: 'true'
+          #   SMTP_REQUIRE_TLS: 'false'
+          # ---------------------------------------------------------------------
+          GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM_NAME: ${{ secrets.EMAIL_FROM_NAME }}
+          REPORT_CSV_PATH: ${{ steps.report.outputs.report_path }}
+          REPORT_DATE: ${{ steps.report.outputs.report_date }}
+        run: npm run --silent send:email
+
+      - name: Upload report artifact
+        if: always() && steps.report.outputs.report_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-market-report-${{ steps.report.outputs.report_date }}
+          path: ${{ steps.report.outputs.report_path }}
+          if-no-files-found: ignore
+          retention-days: 14
