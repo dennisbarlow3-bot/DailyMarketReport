@@ -8,9 +8,10 @@ emails it via Gmail SMTP on business days at 6:00 PM America/New_York.
 - `client/` — React app (Create React App).
 - `server/` — Express server (`server/server.js`) and a placeholder Python
   fetcher (`server/fetch.py`).
-- `scripts/generate-report.js` — Produces `out/daily-market-report-YYYY-MM-DD.csv`.
-  Prints the absolute path of the generated file on its last stdout line so
-  callers (including the workflow) can capture it.
+- `scripts/generate-report.js` — Fetches live stock quotes from Yahoo Finance
+  and writes `out/daily-market-report-YYYY-MM-DD.csv` (date in
+  America/New_York). Prints the absolute path of the generated file on its
+  last stdout line so callers (including the workflow) can capture it.
 - `scripts/send-email.js` — Sends the latest report as an email attachment
   using [nodemailer](https://nodemailer.com/) over Gmail SMTP.
 - `.github/workflows/daily-market-report-email.yml` — Scheduled email workflow.
@@ -28,6 +29,37 @@ npm run daily-report     # generate + send in one step
 > `server/`), swap the body of `scripts/generate-report.js` to invoke it —
 > the workflow only requires the script to print the CSV path on its last
 > stdout line.
+
+## Data source and tickers
+
+`scripts/generate-report.js` pulls quotes from the public Yahoo Finance
+chart endpoint (`query1.finance.yahoo.com/v8/finance/chart/{symbol}`).
+No API key is required, and no third-party npm dependencies are added —
+the script uses Node's built-in `https` module.
+
+**Default tickers:** `SPY, QQQ, DIA, AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA`.
+
+**Customize the universe** by setting the `TICKERS` environment variable to
+a comma-separated list of Yahoo Finance symbols:
+
+```bash
+TICKERS="SPY,QQQ,AAPL,MSFT" npm run generate:report
+```
+
+In the workflow, add `TICKERS` under the *Generate report* step's `env:`
+block to use a custom list on scheduled runs.
+
+### CSV columns
+
+`symbol`, `name`, `regularMarketPrice`, `regularMarketChange`,
+`regularMarketChangePercent`, `regularMarketVolume`, `regularMarketTime`
+(ISO 8601 UTC), `regularMarketOpen`, `regularMarketDayHigh`,
+`regularMarketDayLow`, `regularMarketPreviousClose`, `marketCap` (left blank
+— the chart endpoint does not expose it), `generated_at` (ISO 8601 UTC).
+
+Fields are CSV-escaped (values containing commas, quotes, or newlines are
+quoted), missing values render as empty cells, and the run fails if **no**
+rows can be fetched so the workflow does not email an empty report.
 
 ## GitHub Actions workflow
 
