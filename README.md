@@ -30,36 +30,102 @@ npm run daily-report     # generate + send in one step
 > the workflow only requires the script to print the CSV path on its last
 > stdout line.
 
-## Data source and tickers
+## What the report screens for
 
-`scripts/generate-report.js` pulls quotes from the public Yahoo Finance
-chart endpoint (`query1.finance.yahoo.com/v8/finance/chart/{symbol}`).
-No API key is required, and no third-party npm dependencies are added —
-the script uses Node's built-in `https` module.
+> **Not financial advice.** The CSV is a transparent, deterministic,
+> rules-based screen on top of free, public Yahoo Finance data.
 
-**Default tickers:** `SPY, QQQ, DIA, AAPL, MSFT, NVDA, GOOGL, AMZN, META, TSLA`.
+Each business day the report picks **up to 20 Nasdaq 100 stocks** that:
 
-**Customize the universe** by setting the `TICKERS` environment variable to
-a comma-separated list of Yahoo Finance symbols:
+1. Had the **largest one-day price drop** (ranked by
+   `regularMarketChangePercent`, most negative first), and
+2. Pass a **baseline quality filter** (positive market cap above
+   `MIN_MARKET_CAP`, volume above `MIN_VOLUME`, and an actual decline today),
+   and
+3. Are surfaced with a **growth-tilted composite score** so the names that
+   surface are oversold *growth* companies rather than indiscriminate
+   decliners.
+
+### Scoring model
+
+Three component scores, each on `[0, 1]`, are combined into a `total_score`:
+
+- **`rebound_score`** — `0.55 × drop` + `0.25 × analyst upside` +
+  `0.20 × buy-recommendation`. The size of today's drop is the dominant
+  factor; analyst upside and a bullish mean recommendation add conviction
+  that the move is reversible.
+- **`growth_score`** — `0.45 × revenue growth` + `0.30 × earnings growth` +
+  `0.25 × profit margin`. Implements the **growth tilt** the user asked for.
+- **`quality_score`** — `0.35 × (1 − debt/equity)` + `0.25 × log-scaled
+  market cap` + `0.20 × current ratio` + `0.20 × return on equity`. Rewards
+  healthy balance sheets, scale, and liquidity.
+
+`total_score = 0.50 × rebound + 0.30 × growth + 0.20 × quality`. Rows are
+sorted primarily by the **largest one-day decline** (most negative
+`one_day_change_pct`), with `total_score` as a tie-breaker — so the biggest
+qualifying decliners always surface first.
+
+### Data sources
+
+`scripts/generate-report.js` pulls data from two public Yahoo Finance
+endpoints. **No API key, no third-party npm dependencies** — only Node's
+built-in `https` module:
+
+- `query1.finance.yahoo.com/v8/finance/chart/{symbol}` — live quote, price,
+  previous close, volume.
+- `query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}` — market
+  cap, revenue growth, profit margins, EPS, debt/equity, analyst target
+  price, mean recommendation, etc. Requires a one-time **crumb + cookie
+  handshake** against `fc.yahoo.com` and `/v1/test/getcrumb` — the script
+  performs this automatically.
+
+### Universe
+
+**Default:** the **Nasdaq 100** constituents, embedded as
+`DEFAULT_NDX_100` at the top of `scripts/generate-report.js`. Update that
+array when Nasdaq rebalances the index (typically annually in December).
+
+**Override** at runtime — useful for local testing or running on a custom
+list — by setting the `TICKERS` environment variable to a comma-separated
+list of Yahoo Finance symbols:
 
 ```bash
-TICKERS="SPY,QQQ,AAPL,MSFT" npm run generate:report
+TICKERS="AAPL,MSFT,NVDA" npm run generate:report
 ```
 
-In the workflow, add `TICKERS` under the *Generate report* step's `env:`
-block to use a custom list on scheduled runs.
+In the GitHub Actions workflow, add `TICKERS:` under the *Generate report*
+step's `env:` block to override on scheduled runs.
+
+### Configuration via environment variables
+
+All optional; defaults match the user-selected requirements.
+
+| Variable          | Default       | Purpose                                                |
+| ----------------- | ------------- | ------------------------------------------------------ |
+| `TICKERS`         | Nasdaq 100    | Comma-separated universe override.                     |
+| `OUTPUT_COUNT`    | `20`          | Maximum rows in the CSV body.                          |
+| `MIN_MARKET_CAP`  | `2000000000`  | Minimum market cap in USD ($2B) for baseline filter.   |
+| `MIN_VOLUME`      | `100000`      | Minimum regular-market volume.                         |
+| `MAX_CHANGE_PCT`  | `0`           | Only rank names with `change_pct < this` (drops only). |
 
 ### CSV columns
 
-`symbol`, `name`, `regularMarketPrice`, `regularMarketChange`,
-`regularMarketChangePercent`, `regularMarketVolume`, `regularMarketTime`
-(ISO 8601 UTC), `regularMarketOpen`, `regularMarketDayHigh`,
-`regularMarketDayLow`, `regularMarketPreviousClose`, `marketCap` (left blank
-— the chart endpoint does not expose it), `generated_at` (ISO 8601 UTC).
+`rank`, `symbol`, `name`, `price`, `one_day_change_pct`, `one_day_change`,
+`volume`, `market_cap`, `revenue_growth`, `profit_margins`, `trailing_eps`,
+`forward_eps`, `debt_to_equity`, `target_mean_price`, `analyst_upside_pct`,
+`recommendation_mean`, `quality_score`, `growth_score`, `rebound_score`,
+`total_score`, `generated_at` (ISO 8601 UTC), `notes`.
 
-Fields are CSV-escaped (values containing commas, quotes, or newlines are
-quoted), missing values render as empty cells, and the run fails if **no**
-rows can be fetched so the workflow does not email an empty report.
+The `notes` column explains why each name qualified ("one-day drop -3.42%;
+revenue growth 18.0%; profit margin 22.1%; analyst upside 14.5%; rec mean
+1.80") and flags any missing fundamentals.
+
+CSV values are properly escaped (entries containing commas, quotes, or
+newlines are quoted). Missing values render as empty cells. The run
+**fails if no rows qualify** so the workflow never emails an empty report.
+If fewer than `OUTPUT_COUNT` names qualify (e.g. broad rally with few
+decliners), the available qualified rows are written and a warning is
+printed to stderr.
 
 ## GitHub Actions workflow
 
